@@ -231,7 +231,6 @@ class SmsService:
             phone_clean = phone.replace("+", "").replace(" ", "").replace("-", "")
             if not phone_clean.startswith("58"):
                 phone_clean = "58" + phone_clean
-                phone_clean = "5350763250"
             
             url = f"https://api.vonage.com/v1/sms/?api_key={VONAGE_API_KEY}"
             data = {
