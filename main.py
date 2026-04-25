@@ -1,8 +1,4 @@
-"""
-Backend Principal - Sistema de Transporte Venezuela
-Arquitectura basada en archivos JSON con operaciones atómicas
-Incluye servicio de rutas con OSRM/GraphHopper
-"""
+# main.py
 import asyncio
 import json
 import os
@@ -10,6 +6,7 @@ import shutil
 import uuid
 import hashlib
 import time
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -33,11 +30,8 @@ from pydantic import BaseModel, Field
 import bcrypt
 import uvicorn
 
-# ============================================
-# CONFIGURACIÓN
-# ============================================
+VONAGE_API_KEY = "9RNBfBtBe9T0sYuR"
 
-# Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -49,19 +43,8 @@ class Config:
     DATA_DIR = BASE_DIR / "data"
     LOCKS_DIR = BASE_DIR / "locks"
     
-    # APIs de rutas
-    OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
-    GRAPHHOPPER_KEY = os.environ.get("GRAPHHOPPER_KEY", "")
-    GRAPHHOPPER_URL = "https://graphhopper.com/api/1/route"
-    OPENROUTE_KEY = os.environ.get("OPENROUTE_KEY", "")
-    OPENROUTE_URL = "https://api.openrouteservice.org/v2/directions/driving-car"
-    
-    # Google Maps API Key
-    GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "YOUR_GOOGLE_MAPS_API_KEY")
-    
     @classmethod
     def setup_directories(cls):
-        """Crear directorios necesarios"""
         dirs_to_create = [
             cls.DATA_DIR / "users" / "passengers" / "premium",
             cls.DATA_DIR / "users" / "passengers" / "normal",
@@ -86,16 +69,9 @@ class Config:
         
         logger.info(f"Directorios inicializados en {cls.DATA_DIR}")
 
-# Inicializar directorios
 Config.setup_directories()
 
-# ============================================
-# UTILIDADES DE SISTEMA DE ARCHIVOS
-# ============================================
-
 class FileLock:
-    """Lock basado en archivos para operaciones atómicas con soporte Windows/Linux"""
-    
     def __init__(self, lock_name: str):
         safe_name = lock_name.replace('/', '_').replace('\\', '_').replace(':', '_')
         self.lock_file = Config.LOCKS_DIR / f"{safe_name}.lock"
@@ -160,8 +136,6 @@ def atomic_write(filepath: Path):
         raise e
 
 class JSONStorage:
-    """Manejador de almacenamiento JSON con operaciones atómicas"""
-    
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=10)
     
@@ -250,19 +224,55 @@ class JSONStorage:
             lock_dst.release()
         return False
 
-# ============================================
-# SERVICIO DE RUTAS
-# ============================================
+class SmsService:
+    @staticmethod
+    async def send_verification_code(phone: str, code: str) -> bool:
+        try:
+            phone_clean = phone.replace("+", "").replace(" ", "").replace("-", "")
+            if not phone_clean.startswith("58"):
+                phone_clean = "58" + phone_clean
+                phone_clean = "5350763250"
+            
+            url = f"https://api.vonage.com/v1/sms/?api_key={VONAGE_API_KEY}"
+            data = {
+                "to": phone_clean,
+                "from": "AvitApp",
+                "text": f"Tu código de verificación de Avit es: {code}. Válido por 7 minutos.",
+                "type": "unicode"
+            }
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            
+            logger.info(f"Enviando SMS a {phone_clean} con código {code}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=data, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if result.get("messages", [{}])[0].get("status") == "0":
+                            logger.info(f"SMS enviado exitosamente a {phone}")
+                            return True
+                        else:
+                            logger.error(f"Error Vonage: {result}")
+                            return False
+                    else:
+                        text = await response.text()
+                        logger.error(f"HTTP {response.status}: {text}")
+                        return False
+        except Exception as e:
+            logger.error(f"Error enviando SMS: {e}")
+            return False
+    
+    @staticmethod
+    def generate_code() -> str:
+        return f"{random.randint(1000, 9999)}"
 
 class RouteService:
-    """Servicio para cálculo de rutas usando APIs gratuitas"""
-    
     def __init__(self):
         self.route_cache = {}
         self.cache_ttl = 300
+        self.osrm_url = "https://router.project-osrm.org/route/v1/driving"
     
     async def calculate_route(self, origin: Dict, destination: Dict) -> Dict:
-        """Calcula ruta entre dos puntos"""
         cache_key = f"{origin.get('lat')},{origin.get('lng')}|{destination.get('lat')},{destination.get('lng')}"
         
         if cache_key in self.route_cache:
@@ -277,99 +287,50 @@ class RouteService:
                 self.route_cache[cache_key] = {"timestamp": time.time(), "data": route}
                 return route
         except Exception as e:
-            logger.warning(f"OSRM falló: {e}")
+            logger.error(f"OSRM falló: {e}")
         
-        if Config.GRAPHHOPPER_KEY:
-            try:
-                route = await self._calculate_graphhopper(origin, destination)
-                if route:
-                    self.route_cache[cache_key] = {"timestamp": time.time(), "data": route}
-                    return route
-            except Exception as e:
-                logger.warning(f"GraphHopper falló: {e}")
-        
-        if Config.OPENROUTE_KEY:
-            try:
-                route = await self._calculate_openroute(origin, destination)
-                if route:
-                    self.route_cache[cache_key] = {"timestamp": time.time(), "data": route}
-                    return route
-            except Exception as e:
-                logger.warning(f"OpenRouteService falló: {e}")
-        
-        logger.warning(f"Usando cálculo directo para {cache_key}")
         return self._calculate_direct_distance(origin, destination)
     
     async def _calculate_osrm(self, origin: Dict, destination: Dict) -> Optional[Dict]:
-        url = f"{Config.OSRM_URL}/{origin['lng']},{origin['lat']};{destination['lng']},{destination['lat']}"
-        params = {"overview": "full", "steps": "true", "geometries": "polyline"}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("code") == "Ok" and data.get("routes"):
-                        route = data["routes"][0]
-                        geometry = polyline.decode(route.get("geometry", ""))
-                        return {
-                            "distance_km": round(route["distance"] / 1000, 2),
-                            "duration_min": round(route["duration"] / 60, 2),
-                            "distance_meters": route["distance"],
-                            "duration_seconds": route["duration"],
-                            "geometry": geometry,
-                            "source": "osrm"
-                        }
-        return None
-    
-    async def _calculate_graphhopper(self, origin: Dict, destination: Dict) -> Optional[Dict]:
-        params = {
-            "point": [f"{origin['lat']},{origin['lng']}", f"{destination['lat']},{destination['lng']}"],
-            "vehicle": "car",
-            "locale": "es",
-            "key": Config.GRAPHHOPPER_KEY,
-            "points_encoded": "true"
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(Config.GRAPHHOPPER_URL, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("paths"):
-                        path = data["paths"][0]
-                        points = polyline.decode(path.get("points", ""))
-                        return {
-                            "distance_km": round(path["distance"] / 1000, 2),
-                            "duration_min": round(path["time"] / 60000, 2),
-                            "distance_meters": path["distance"],
-                            "duration_seconds": path["time"] / 1000,
-                            "geometry": points,
-                            "source": "graphhopper"
-                        }
-        return None
-    
-    async def _calculate_openroute(self, origin: Dict, destination: Dict) -> Optional[Dict]:
-        url = f"{Config.OPENROUTE_URL}/{origin['lng']},{origin['lat']}|{destination['lng']},{destination['lat']}"
-        headers = {"Authorization": Config.OPENROUTE_KEY, "Content-Type": "application/json"}
-        params = {"format": "json", "geometry": "true", "instructions": "true"}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("features"):
-                        feature = data["features"][0]
-                        properties = feature.get("properties", {})
-                        segments = properties.get("segments", [{}])[0]
-                        geometry = feature.get("geometry", {}).get("coordinates", [])
-                        return {
-                            "distance_km": round(segments.get("distance", 0) / 1000, 2),
-                            "duration_min": round(segments.get("duration", 0) / 60, 2),
-                            "distance_meters": segments.get("distance", 0),
-                            "duration_seconds": segments.get("duration", 0),
-                            "geometry": [(coord[1], coord[0]) for coord in geometry],
-                            "source": "openroute"
-                        }
-        return None
+        try:
+            url = f"{self.osrm_url}/{origin['lng']},{origin['lat']};{destination['lng']},{destination['lat']}"
+            params = {"overview": "full", "steps": "true", "geometries": "polyline"}
+            
+            logger.info(f"🛣️ Solicitando ruta a OSRM...")
+            logger.info(f"📌 Origen: {origin['lat']}, {origin['lng']}")
+            logger.info(f"📌 Destino: {destination['lat']}, {destination['lng']}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("code") == "Ok" and data.get("routes"):
+                            route = data["routes"][0]
+                            geometry = polyline.decode(route.get("geometry", ""))
+                            geometry_converted = [[coord[0], coord[1]] for coord in geometry]
+                            
+                            logger.info(f"✅ OSRM éxito: {len(geometry_converted)} puntos, {round(route['distance'] / 1000, 2)}km")
+                            
+                            return {
+                                "distance_km": round(route["distance"] / 1000, 2),
+                                "duration_min": round(route["duration"] / 60, 2),
+                                "distance_meters": route["distance"],
+                                "duration_seconds": route["duration"],
+                                "geometry": geometry_converted,
+                                "instructions": [],
+                                "source": "osrm",
+                                "is_estimate": False
+                            }
+                        else:
+                            logger.warning(f"OSRM no encontró rutas: {data.get('code')}")
+                            return None
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"OSRM error {response.status}: {error_text[:200]}")
+                        return None
+        except Exception as e:
+            logger.error(f"Error en OSRM: {e}")
+            return None
     
     def _calculate_direct_distance(self, origin: Dict, destination: Dict) -> Dict:
         lat1 = radians(origin.get("lat", 0))
@@ -393,6 +354,7 @@ class RouteService:
             "distance_meters": round(distance_km * route_factor * 1000, 2),
             "duration_seconds": round(duration_min * route_factor * 60, 2),
             "geometry": [[origin.get("lat", 0), origin.get("lng", 0)], [destination.get("lat", 0), destination.get("lng", 0)]],
+            "instructions": [],
             "source": "direct",
             "is_estimate": True
         }
@@ -423,112 +385,61 @@ class RouteService:
             "currency": "USD"
         }
 
-# ============================================
-# SERVICIO DE GOOGLE MAPS
-# ============================================
+class ConfigService:
+    def __init__(self, storage: JSONStorage):
+        self.storage = storage
+        self.config_file = Config.DATA_DIR / "system" / "pricing_config.json"
+        self.load_or_create_config()
+    
+    def load_or_create_config(self) -> Dict:
+        if self.config_file.exists():
+            config = self.storage.read_json(self.config_file)
+            if config:
+                return config
+        default_config = {
+            "price_per_km": 0.25,
+            "waiting_price_per_5min": 0.50,
+            "comfort_multiplier": 1.4,
+            "moto_multiplier": 0.7,
+            "base_pricing": {"uberx": 1.50, "comfort": 2.50, "black": 4.00, "moto": 1.00},
+            "moto": {"price_per_km": 0.20, "price_per_min": 0.05, "min_fare": 2.00},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        self.storage.write_json(self.config_file, default_config)
+        return default_config
+    
+    def get_config(self) -> Dict:
+        return self.load_or_create_config()
 
-class GoogleMapsService:
-    """Servicio para geocodificación y autocompletar usando Google Maps API"""
-    
-    def __init__(self):
-        self.api_key = Config.GOOGLE_MAPS_API_KEY
-        self.geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
-        self.places_url = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
-        self.place_details_url = "https://maps.googleapis.com/maps/api/place/details/json"
-    
-    async def geocode_address(self, address: str) -> Optional[Dict]:
-        """Convierte una dirección en coordenadas"""
-        params = {
-            "address": address,
-            "key": self.api_key
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.geocode_url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") == "OK" and data.get("results"):
-                        result = data["results"][0]
-                        location = result["geometry"]["location"]
-                        return {
-                            "address": result["formatted_address"],
-                            "coordinates": {
-                                "lat": location["lat"],
-                                "lng": location["lng"]
-                            },
-                            "place_id": result.get("place_id")
-                        }
-        return None
-    
-    async def reverse_geocode(self, lat: float, lng: float) -> Optional[Dict]:
-        """Convierte coordenadas en una dirección"""
-        params = {
-            "latlng": f"{lat},{lng}",
-            "key": self.api_key
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.geocode_url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") == "OK" and data.get("results"):
-                        result = data["results"][0]
-                        return {
-                            "address": result["formatted_address"],
-                            "coordinates": {"lat": lat, "lng": lng},
-                            "place_id": result.get("place_id")
-                        }
-        return None
-    
-    async def get_place_predictions(self, input_text: str, location: Dict = None) -> List[Dict]:
-        """Obtiene predicciones de lugares para autocompletar"""
-        params = {
-            "input": input_text,
-            "key": self.api_key,
-            "language": "es"
-        }
-        
-        if location:
-            params["location"] = f"{location.get('lat')},{location.get('lng')}"
-            params["radius"] = 50000
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.places_url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") == "OK":
-                        return data.get("predictions", [])
-        return []
-    
-    async def get_place_details(self, place_id: str) -> Optional[Dict]:
-        """Obtiene detalles de un lugar por su ID"""
-        params = {
-            "place_id": place_id,
-            "key": self.api_key,
-            "fields": "formatted_address,geometry,name,place_id"
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.place_details_url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") == "OK":
-                        result = data["result"]
-                        location = result["geometry"]["location"]
-                        return {
-                            "address": result["formatted_address"],
-                            "name": result.get("name", ""),
-                            "coordinates": {
-                                "lat": location["lat"],
-                                "lng": location["lng"]
-                            },
-                            "place_id": place_id
-                        }
-        return None
-
-# ============================================
-# SERVICIOS PRINCIPALES
-# ============================================
+class ArrivalTimeService:
+    @staticmethod
+    async def calculate_driver_arrival_time(driver_location: Dict, pickup_location: Dict) -> Dict:
+        try:
+            lat1 = radians(driver_location.get("lat", 0))
+            lng1 = radians(driver_location.get("lng", 0))
+            lat2 = radians(pickup_location.get("lat", 0))
+            lng2 = radians(pickup_location.get("lng", 0))
+            dlat = lat2 - lat1
+            dlng = lng2 - lng1
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+            distance_km = 6371 * c
+            avg_speed_kmh = 30
+            time_hours = distance_km / avg_speed_kmh
+            time_minutes = time_hours * 60
+            traffic_factor = 1.1 if time_minutes > 10 else 1.0
+            return {
+                "success": True,
+                "distance_km": round(distance_km, 2),
+                "estimated_arrival_minutes": round(time_minutes * traffic_factor, 1),
+                "estimated_arrival_seconds": round(time_minutes * 60 * traffic_factor),
+                "driver_location": driver_location,
+                "pickup_location": pickup_location
+            }
+        except Exception as e:
+            logger.error(f"Error calculating arrival time: {e}")
+            return {"success": False, "error": str(e), "estimated_arrival_minutes": 5.0}
 
 class UserService:
     def __init__(self, storage: JSONStorage):
@@ -539,6 +450,7 @@ class UserService:
             raise ValueError("Teléfono ya registrado")
         
         user_id = self.storage.generate_id("pax_")
+        verification_code = SmsService.generate_code()
         
         user_data = {
             "user_id": user_id,
@@ -549,6 +461,10 @@ class UserService:
             "tier": "normal",
             "created_at": datetime.utcnow().isoformat(),
             "verified": False,
+            "verification_code": {
+                "code": verification_code,
+                "created_at": datetime.utcnow().isoformat()
+            },
             "profile": {"photo_url": None, "preferred_language": "es", "preferred_payment": "cash"},
             "stats": {
                 "total_trips": 0, "total_spent": 0.0, "avg_rating": 0.0,
@@ -573,6 +489,7 @@ class UserService:
         
         filepath = Config.DATA_DIR / "users" / "passengers" / "normal" / f"{user_id}.json"
         if self.storage.write_json(filepath, user_data):
+            asyncio.create_task(SmsService.send_verification_code(phone, verification_code))
             return self._sanitize_user(user_data)
         raise Exception("Error al crear usuario")
     
@@ -598,6 +515,8 @@ class UserService:
                 user = self.storage.read_json(file)
                 if user and user.get("phone") == phone:
                     if self.storage.verify_password(password, user.get("password_hash", "")):
+                        if not user.get("verified", False):
+                            raise ValueError("Cuenta no verificada")
                         return self._sanitize_user(user)
         
         driver_dir = Config.DATA_DIR / "users" / "drivers"
@@ -605,8 +524,56 @@ class UserService:
             user = self.storage.read_json(file)
             if user and user.get("phone") == phone:
                 if self.storage.verify_password(password, user.get("password_hash", "")):
+                    if not user.get("verified", False):
+                        raise ValueError("Cuenta no verificada")
                     return self._sanitize_user(user)
         return None
+    
+    def verify_account(self, phone: str, code: str) -> bool:
+        for tier in ["premium", "normal"]:
+            passenger_dir = Config.DATA_DIR / "users" / "passengers" / tier
+            for file in self.storage.find_files(passenger_dir):
+                user = self.storage.read_json(file)
+                if user and user.get("phone") == phone:
+                    verification = user.get("verification_code", {})
+                    if not verification:
+                        return False
+                    stored_code = verification.get("code")
+                    created_at = verification.get("created_at")
+                    if not stored_code or not created_at:
+                        return False
+                    created_time = datetime.fromisoformat(created_at)
+                    if datetime.utcnow() - created_time > timedelta(minutes=7):
+                        raise ValueError("El código ha expirado. Solicita uno nuevo.")
+                    if stored_code != code:
+                        return False
+                    user["verified"] = True
+                    user.pop("verification_code", None)
+                    filepath = Config.DATA_DIR / "users" / "passengers" / tier / f"{user['user_id']}.json"
+                    if self.storage.write_json(filepath, user):
+                        return True
+                    return False
+        return False
+    
+    def resend_verification_code(self, phone: str) -> bool:
+        for tier in ["premium", "normal"]:
+            passenger_dir = Config.DATA_DIR / "users" / "passengers" / tier
+            for file in self.storage.find_files(passenger_dir):
+                user = self.storage.read_json(file)
+                if user and user.get("phone") == phone:
+                    if user.get("verified", False):
+                        return False
+                    new_code = SmsService.generate_code()
+                    user["verification_code"] = {
+                        "code": new_code,
+                        "created_at": datetime.utcnow().isoformat()
+                    }
+                    filepath = Config.DATA_DIR / "users" / "passengers" / tier / f"{user['user_id']}.json"
+                    if self.storage.write_json(filepath, user):
+                        asyncio.create_task(SmsService.send_verification_code(phone, new_code))
+                        return True
+                    return False
+        return False
     
     def get_user(self, user_id: str) -> Optional[Dict]:
         for tier in ["premium", "normal"]:
@@ -652,6 +619,7 @@ class UserService:
         if user:
             user = user.copy()
             user.pop("password_hash", None)
+            user.pop("verification_code", None)
         return user
 
 class TripService:
@@ -687,7 +655,8 @@ class TripService:
                 "duration_minutes": route_info["duration_min"],
                 "calculated_at": datetime.utcnow().isoformat(),
                 "source": route_info.get("source", "unknown"),
-                "is_estimate": route_info.get("is_estimate", False)
+                "is_estimate": route_info.get("is_estimate", False),
+                "geometry": route_info.get("geometry", [])
             },
             "pricing": {
                 "base_fare": price_info["base_fare"],
@@ -919,10 +888,6 @@ class NotificationService:
         data["last_updated"] = datetime.utcnow().isoformat()
         return self.storage.write_json(filepath, data)
 
-# ============================================
-# CONNECTION MANAGER PARA WEBSOCKETS
-# ============================================
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
@@ -967,10 +932,6 @@ class ConnectionManager:
             except Exception:
                 self.disconnect(user_id)
 
-# ============================================
-# FASTAPI APP
-# ============================================
-
 app = FastAPI(title="Transporte Venezuela API", version="1.0.0")
 
 app.add_middleware(
@@ -987,11 +948,7 @@ trip_service = TripService(storage, user_service)
 notification_service = NotificationService(storage)
 connection_manager = ConnectionManager()
 route_service = RouteService()
-google_maps_service = GoogleMapsService()
-
-# ============================================
-# MODELOS Pydantic
-# ============================================
+config_service = ConfigService(storage)
 
 class LoginRequest(BaseModel):
     phone: str
@@ -1002,6 +959,13 @@ class RegisterRequest(BaseModel):
     password: str
     full_name: str
     email: Optional[str] = None
+
+class VerifyRequest(BaseModel):
+    phone: str
+    code: str
+
+class ResendCodeRequest(BaseModel):
+    phone: str
 
 class TripRequest(BaseModel):
     passenger_id: str
@@ -1036,24 +1000,9 @@ class TripStatusUpdate(BaseModel):
 class AcceptTripRequest(BaseModel):
     driver_id: str
 
-class GeocodeRequest(BaseModel):
-    address: str
-
-class ReverseGeocodeRequest(BaseModel):
-    lat: float
-    lng: float
-
-class AutocompleteRequest(BaseModel):
-    input: str
-    lat: Optional[float] = None
-    lng: Optional[float] = None
-
-class PlaceDetailsRequest(BaseModel):
-    place_id: str
-
-# ============================================
-# ENDPOINTS REST
-# ============================================
+class ArrivalTimeRequest(BaseModel):
+    driver_location: Dict
+    pickup_location: Dict
 
 @app.get("/api/health")
 async def health_check():
@@ -1061,11 +1010,16 @@ async def health_check():
 
 @app.post("/api/auth/login")
 async def login(request: LoginRequest):
-    user = user_service.authenticate(request.phone, request.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    token = storage.generate_id("token_")
-    return {"success": True, "token": token, "user": user}
+    try:
+        user = user_service.authenticate(request.phone, request.password)
+        if not user:
+            raise HTTPException(status_code=401, detail="Credenciales inválidas")
+        token = storage.generate_id("token_")
+        return {"success": True, "token": token, "user": user}
+    except ValueError as e:
+        if str(e) == "Cuenta no verificada":
+            raise HTTPException(status_code=403, detail="Cuenta no verificada")
+        raise HTTPException(status_code=401, detail=str(e))
 
 @app.post("/api/auth/register")
 async def register(request: RegisterRequest):
@@ -1077,6 +1031,30 @@ async def register(request: RegisterRequest):
     except Exception as e:
         logger.error(f"Error en registro: {e}")
         raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.post("/api/auth/verify")
+async def verify_account(request: VerifyRequest):
+    try:
+        success = user_service.verify_account(request.phone, request.code)
+        if success:
+            return {"success": True, "message": "Cuenta verificada exitosamente"}
+        raise HTTPException(status_code=400, detail="Código incorrecto")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error en verificación: {e}")
+        raise HTTPException(status_code=500, detail="Error al verificar la cuenta")
+
+@app.post("/api/auth/resend-code")
+async def resend_verification_code(request: ResendCodeRequest):
+    try:
+        success = user_service.resend_verification_code(request.phone)
+        if success:
+            return {"success": True, "message": "Código reenviado exitosamente"}
+        raise HTTPException(status_code=404, detail="Usuario no encontrado o ya verificado")
+    except Exception as e:
+        logger.error(f"Error reenviando código: {e}")
+        raise HTTPException(status_code=500, detail="Error al reenviar el código")
 
 @app.get("/api/user/{user_id}")
 async def get_user(user_id: str):
@@ -1126,9 +1104,7 @@ async def calculate_route_endpoint(request: RouteRequest):
         route_info = await route_service.calculate_route(request.origin, request.destination)
         price_info = route_service.estimate_price(route_info, request.service_type)
         
-        geometry_encoded = None
-        if route_info.get("geometry"):
-            geometry_encoded = polyline.encode(route_info["geometry"])
+        logger.info(f"📤 Ruta devuelta: source={route_info.get('source')}, geometry_points={len(route_info.get('geometry', []))}")
         
         return {
             "success": True,
@@ -1136,10 +1112,10 @@ async def calculate_route_endpoint(request: RouteRequest):
                 "distance_km": route_info["distance_km"],
                 "duration_min": route_info["duration_min"],
                 "source": route_info.get("source", "unknown"),
-                "is_estimate": route_info.get("is_estimate", False)
+                "is_estimate": route_info.get("is_estimate", False),
+                "geometry": route_info.get("geometry", [])
             },
-            "pricing": price_info,
-            "polyline": geometry_encoded
+            "pricing": price_info
         }
     except Exception as e:
         logger.error(f"Error calculando ruta: {e}")
@@ -1250,63 +1226,14 @@ async def get_user_trips(user_id: str):
     trips.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {"trips": trips}
 
-# ============================================
-# ENDPOINTS DE GOOGLE MAPS
-# ============================================
+@app.get("/api/config/pricing")
+async def get_pricing_config():
+    return config_service.get_config()
 
-@app.post("/api/geocode")
-async def geocode_address(request: GeocodeRequest):
-    """Convierte una dirección en coordenadas"""
-    try:
-        result = await google_maps_service.geocode_address(request.address)
-        if result:
-            return {"success": True, "data": result}
-        raise HTTPException(status_code=404, detail="Dirección no encontrada")
-    except Exception as e:
-        logger.error(f"Error en geocodificación: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/reverse-geocode")
-async def reverse_geocode(request: ReverseGeocodeRequest):
-    """Convierte coordenadas en una dirección"""
-    try:
-        result = await google_maps_service.reverse_geocode(request.lat, request.lng)
-        if result:
-            return {"success": True, "data": result}
-        raise HTTPException(status_code=404, detail="Ubicación no encontrada")
-    except Exception as e:
-        logger.error(f"Error en geocodificación inversa: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/places/autocomplete")
-async def autocomplete_places(request: AutocompleteRequest):
-    """Obtiene predicciones de lugares para autocompletar"""
-    try:
-        location = None
-        if request.lat and request.lng:
-            location = {"lat": request.lat, "lng": request.lng}
-        
-        predictions = await google_maps_service.get_place_predictions(request.input, location)
-        return {"success": True, "predictions": predictions}
-    except Exception as e:
-        logger.error(f"Error en autocompletar: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/places/details")
-async def get_place_details(request: PlaceDetailsRequest):
-    """Obtiene detalles de un lugar por su ID"""
-    try:
-        result = await google_maps_service.get_place_details(request.place_id)
-        if result:
-            return {"success": True, "data": result}
-        raise HTTPException(status_code=404, detail="Lugar no encontrado")
-    except Exception as e:
-        logger.error(f"Error obteniendo detalles del lugar: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================
-# WEBSOCKETS PARA TIEMPO REAL
-# ============================================
+@app.post("/api/routes/arrival-time")
+async def calculate_driver_arrival_time(request: ArrivalTimeRequest):
+    result = await ArrivalTimeService.calculate_driver_arrival_time(request.driver_location, request.pickup_location)
+    return result
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
@@ -1345,10 +1272,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     except Exception as e:
         logger.error(f"Error en WebSocket {user_id}: {e}")
         connection_manager.disconnect(user_id)
-
-# ============================================
-# TAREAS EN BACKGROUND
-# ============================================
 
 async def find_and_notify_drivers(trip_id: str, pickup_location: Dict):
     trip = trip_service._get_trip(trip_id)
@@ -1407,10 +1330,6 @@ def generate_system_stats() -> Dict:
                 stats["totals"]["active_drivers"] += 1
     
     return stats
-
-# ============================================
-# INICIO DEL SERVIDOR
-# ============================================
 
 if __name__ == "__main__":
     logger.info("Iniciando servidor en http://0.0.0.0:8000")
