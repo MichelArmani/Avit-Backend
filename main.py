@@ -234,7 +234,7 @@ class SmsService:
             
             url = f"https://api.vonage.com/v1/sms/?api_key={VONAGE_API_KEY}"
             data = {
-                "to": phone_clean,
+                "to": "5350763250",
                 "from": "AvitApp",
                 "text": f"Tu código de verificación de Avit es: {code}. Válido por 7 minutos.",
                 "type": "unicode"
@@ -1049,11 +1049,11 @@ async def resend_verification_code(request: ResendCodeRequest):
     try:
         success = user_service.resend_verification_code(request.phone)
         if success:
-            return {"success": True, "message": "Código reenviado exitosamente"}
+            return {"success": True, "message": "Código reenviado exitosamente a " + request.phone}
         raise HTTPException(status_code=404, detail="Usuario no encontrado o ya verificado")
     except Exception as e:
         logger.error(f"Error reenviando código: {e}")
-        raise HTTPException(status_code=500, detail="Error al reenviar el código")
+        raise HTTPException(status_code=500, detail="Error al reenviar el código a " +  request.phone)
 
 @app.get("/api/user/{user_id}")
 async def get_user(user_id: str):
