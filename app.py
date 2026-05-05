@@ -8,7 +8,23 @@ from pymysql.cursors import DictCursor
 app = Flask(__name__)
 
 # ✅ Configuración CORS que permite TODOS los orígenes
-CORS(app, origins="*")
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        "allow_headers": ["*"],
+        "expose_headers": ["*"]
+    }
+})
+
+# También agrega este middleware MANUAL por si acaso
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', '*')
+    response.headers.add('Access-Control-Allow-Methods', '*')
+    response.headers.add('Access-Control-Allow-Credentials', 'false')
+    return response
 
 # Configuración de la base de datos
 def get_db():
