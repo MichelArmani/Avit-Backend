@@ -8,20 +8,7 @@ from pymysql.cursors import DictCursor
 app = Flask(__name__)
 
 # ✅ Configuración CORS que permite TODOS los orígenes
-CORS(app, 
-     origins=[
-         "https://avit-taxis.page.gd",      # Tu frontend principal
-         "https://www.avit-taxis.page.gd",  # Con www
-         "http://localhost:3000",            # Desarrollo local
-         "https://localhost:3000",
-         "http://localhost:3001",
-         "https://localhost:3001"
-     ],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-     allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
-     expose_headers=["Content-Type", "Authorization"],
-     supports_credentials=True,  # Importante si usas autenticación
-     max_age=3600)
+CORS(app, origins="*")
 
 # Configuración de la base de datos
 def get_db():
