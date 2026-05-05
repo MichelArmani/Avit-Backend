@@ -6,17 +6,18 @@ from pymysql.cursors import DictCursor
 
 # Crear la aplicación Flask primero
 app = Flask(__name__)
-CORS(app, origins=[
-    "http://localhost:3000",
-    'https://localhost:3000',  # Next.js con HTTPS
-    'http://localhost:3000',   # Tu backend
-    
-    'https://localhost:3001',  # Next.js con HTTPS
-    'http://localhost:3001',   # Tu backend
 
-    'https://localhost:3002',  # Next.js con HTTPS
-    'http://localhost:3002',   # Tu backend
-])
+# ✅ Configuración CORS que permite TODOS los orígenes
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",  # Permite cualquier origen
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+        "expose_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": False,  # Si usas credenciales (cookies, auth), cámbialo a True
+        "max_age": 3600
+    }
+})
 
 # Configuración de la base de datos
 def get_db():
