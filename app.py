@@ -45,6 +45,10 @@ def init_db():
         
         print("🔄 Creando tablas en la base de datos...")
         
+        # Eliminar la tabla trips si existe (para evitar errores de ENUM)
+        cursor.execute("DROP TABLE IF EXISTS trips")
+        print("✓ Tabla 'trips' eliminada (recreando con ENUM correcto)")
+        
         # Crear tabla de usuarios
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -105,9 +109,9 @@ def init_db():
         """)
         print("✓ Tabla 'drivers' creada/verificada")
         
-        # Crear tabla de viajes (ACTUALIZADA con nuevas columnas)
+        # Crear tabla de viajes (RECREADA con ENUM correcto)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trips (
+            CREATE TABLE trips (
                 id VARCHAR(50) PRIMARY KEY,
                 passenger_id INT NOT NULL,
                 driver_id INT,
@@ -138,9 +142,9 @@ def init_db():
                 FOREIGN KEY (driver_id) REFERENCES drivers(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
-        print("✓ Tabla 'trips' creada/verificada (con nuevas columnas: rejected_drivers, driver_assigned_at, driver_arrived_at, started_at, completed_at)")
+        print("✓ Tabla 'trips' creada correctamente con ENUM 'cancelled'")
         
-        # Crear tabla de métodos de pago (NUEVA)
+        # Crear tabla de métodos de pago
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS payment_methods (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -156,7 +160,7 @@ def init_db():
         """)
         print("✓ Tabla 'payment_methods' creada/verificada")
         
-        # Crear tabla de transacciones de wallet (NUEVA)
+        # Crear tabla de transacciones de wallet
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS wallet_transactions (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -202,7 +206,7 @@ def init_db():
         """)
         print("✓ Tabla 'device_tokens' creada/verificada")
         
-        # Crear tabla de lugares guardados (NUEVA)
+        # Crear tabla de lugares guardados
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS saved_places (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -256,19 +260,5 @@ if __name__ == '__main__':
     
     # Inicializar base de datos
     init_db()
-    
-    print("\n📡 Servidor corriendo en:")
-    print("   ➜ http://localhost:3001")
-    print("   ➜ http://127.0.0.1:3001")
-    print("\n📚 Endpoints disponibles:")
-    print("   ➜ /auth/register")
-    print("   ➜ /auth/login")
-    print("   ➜ /auth/verify-phone")
-    print("   ➜ /auth/complete-registration")
-    print("   ➜ /passenger/*")
-    print("   ➜ /driver/*")
-    print("   ➜ /trips/*")
-    print("\n💡 Presiona Ctrl+C para detener el servidor")
-    print("=" * 50)
     
     app.run(debug=True, port=3001, host='0.0.0.0')
