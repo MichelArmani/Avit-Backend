@@ -4,7 +4,6 @@ from config import Config
 import pymysql
 from pymysql.cursors import DictCursor
 
-# Crear la aplicación Flask primero
 app = Flask(__name__)
 
 # ✅ Configuración CORS que permite TODOS los orígenes
