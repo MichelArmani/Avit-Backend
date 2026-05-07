@@ -73,7 +73,6 @@ def driver_profile():
             return jsonify({'data': profile})
         else:
             # PUT - Actualizar perfil
-            data = request.json
             return jsonify({'data': {'message': 'Profile updated'}})
         
     except Exception as e:
@@ -266,8 +265,7 @@ def accept_trip(trip_id):
         if not driver:
             return jsonify({'error': 'Driver profile not found'}), 404
         
-        cursor.execute("SELECT * FROM trips WHERE id = %s AND status = 'searching'", (trip_id,))
-
+        cursor.execute('SELECT * FROM trips WHERE id = %s AND status = "searching"', (trip_id,))
         trip = cursor.fetchone()
         
         if not trip:
@@ -555,7 +553,7 @@ def get_earnings():
     period = request.args.get('period', 'week')
     
     # Versión simplificada - puede ser null si no hay datos
-    return null}), 200
+    return jsonify({'data': None}), 200
 
 @driver_bp.route('/stats', methods=['GET'])
 def get_stats():
