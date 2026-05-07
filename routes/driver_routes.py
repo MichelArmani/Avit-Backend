@@ -265,15 +265,15 @@ def accept_trip(trip_id):
         if not driver:
             return jsonify({'error': 'Driver profile not found'}), 404
         
-        cursor.execute('SELECT * FROM trips WHERE id = %s AND status = "searching"', (trip_id,))
+        cursor.execute('SELECT * FROM trips WHERE id = %s AND status = %s', (trip_id, 'searching'))
         trip = cursor.fetchone()
         
         if not trip:
             return jsonify({'error': 'Trip not available'}), 404
         
         cursor.execute(
-            'UPDATE trips SET driver_id = %s, status = "driver_assigned", driver_assigned_at = NOW() WHERE id = %s',
-            (driver['id'], trip_id)
+            'UPDATE trips SET driver_id = %s, status = %s, driver_assigned_at = NOW() WHERE id = %s',
+            (driver['id'], 'driver_assigned', trip_id)
         )
         db.commit()
         
