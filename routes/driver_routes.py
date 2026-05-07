@@ -266,7 +266,8 @@ def accept_trip(trip_id):
         if not driver:
             return jsonify({'error': 'Driver profile not found'}), 404
         
-        cursor.execute('SELECT * FROM trips WHERE id = %s AND status = "searching"', (trip_id,))
+        cursor.execute("SELECT * FROM trips WHERE id = %s AND status = 'searching'", (trip_id,))
+
         trip = cursor.fetchone()
         
         if not trip:
@@ -554,14 +555,7 @@ def get_earnings():
     period = request.args.get('period', 'week')
     
     # Versión simplificada - puede ser null si no hay datos
-    return jsonify({
-        'data': {
-            'driver_earnings': 150.00,
-            'total_trips': 12,
-            'avg_per_trip': 12.50,
-            'daily_breakdown': []
-        }
-    }), 200
+    return null}), 200
 
 @driver_bp.route('/stats', methods=['GET'])
 def get_stats():
