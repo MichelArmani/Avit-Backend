@@ -458,9 +458,9 @@ def complete_trip(trip_id):
     
     try:
         cursor.execute(
-            'UPDATE trips SET status = "completed", completed_at = NOW() WHERE id = %s',
-            (trip_id,)
-        )
+    'UPDATE trips SET status = %s, completed_at = NOW() WHERE id = %s',
+    ('completed', trip_id)
+)
         db.commit()
         
         print(f'✅ Trip {trip_id} completed')
