@@ -71,7 +71,7 @@ def stats():
         cursor.execute('SELECT COUNT(*) as total_trips FROM trips WHERE passenger_id = %s', (user['id'],))
         trips_data = cursor.fetchone()
         
-        cursor.execute('SELECT COALESCE(SUM(estimated_price), 0) as total_spent FROM trips WHERE passenger_id = %s AND status = "completed"', (user['id'],))
+        cursor.execute('SELECT COALESCE(SUM(estimated_price), 0) as total_spent FROM trips WHERE passenger_id = %s AND status = %s', (user['id'], 'completed'))
         spent_data = cursor.fetchone()
         
         return jsonify({
