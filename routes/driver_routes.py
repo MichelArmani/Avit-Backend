@@ -395,9 +395,9 @@ def start_trip(trip_id):
     
     try:
         cursor.execute(
-            'UPDATE trips SET status = "in_progress" WHERE id = %s',
-            (trip_id,)
-        )
+    'UPDATE trips SET status = %s WHERE id = %s',
+    ('in_progress', trip_id)
+)
         db.commit()
         
         # ✅ Obtener el viaje actualizado
