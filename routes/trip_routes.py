@@ -505,9 +505,9 @@ def cancel_trip(trip_id):
     cursor = db.cursor()
     try:
         cursor.execute(
-            'UPDATE trips SET status = "cancelled", cancellation_reason = %s WHERE id = %s AND passenger_id = %s',
-            (reason, trip_id, user['id'])
-        )
+    'UPDATE trips SET status = %s, cancellation_reason = %s WHERE id = %s AND passenger_id = %s',
+    ('cancelled', reason, trip_id, user['id'])
+)
         db.commit()
         print(f'❌ Trip {trip_id} cancelled')
         return jsonify({'data': {'message': 'Trip cancelled'}}), 200
