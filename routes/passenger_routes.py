@@ -53,6 +53,37 @@ def profile():
         cursor.close()
         db.close()
 
+@passenger_bp.route('/favplace', methods=['PUT'])
+def favplace():
+    from app import get_db
+    
+    user = get_user_from_token(request.headers.get('Authorization'))
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+
+    try:
+        if request.method == 'PUT':
+            data = request.json
+            fav = data.get('fav', user['fav'])
+            
+            cursor.execute(
+                'UPDATE users SET fav = %s WHERE id = %s',
+                (fav, user['id'])
+            )
+            db.commit()
+            return jsonify({'data': {'message': 'Profile updated'}}), 200
+            
+    except Exception as e:
+        db.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        db.close()
+
+
 @passenger_bp.route('/stats', methods=['GET'])
 def stats():
     from app import get_db
