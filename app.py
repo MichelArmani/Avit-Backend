@@ -8,22 +8,22 @@ app = Flask(__name__)
 
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], "allow_headers": ["*"], "expose_headers": ["*"]}})
 
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', '*')
-    response.headers.add('Access-Control-Allow-Methods', '*')
-    response.headers.add('Access-Control-Allow-Credentials', 'false')
-    return response
+# @app.after_request
+# def after_request(response):
+#     response.headers.add('Access-Control-Allow-Origin', '*')
+#     response.headers.add('Access-Control-Allow-Headers', '*')
+#     response.headers.add('Access-Control-Allow-Methods', '*')
+#     response.headers.add('Access-Control-Allow-Credentials', 'false')
+#     return response
 
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add('Access-Control-Allow-Headers', "*")
-        response.headers.add('Access-Control-Allow-Methods', "*")
-        return response
+# @app.before_request
+# def handle_preflight():
+#     if request.method == "OPTIONS":
+#         response = make_response()
+#         response.headers.add("Access-Control-Allow-Origin", "*")
+#         response.headers.add('Access-Control-Allow-Headers', "*")
+#         response.headers.add('Access-Control-Allow-Methods', "*")
+#         return response
 
 def get_db():
     return pymysql.connect(
