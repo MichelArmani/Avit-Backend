@@ -8,24 +8,57 @@ app = Flask(__name__)
 
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], "allow_headers": ["*"], "expose_headers": ["*"]}})
 
-# @app.after_request
-# def after_request(response):
-#     response.headers.add('Access-Control-Allow-Origin', '*')
-#     response.headers.add('Access-Control-Allow-Headers', '*')
-#     response.headers.add('Access-Control-Allow-Methods', '*')
-#     response.headers.add('Access-Control-Allow-Credentials', 'false')
-#     return response
-
-# @app.before_request
-# def handle_preflight():
-#     if request.method == "OPTIONS":
-#         response = make_response()
-#         response.headers.add("Access-Control-Allow-Origin", "*")
-#         response.headers.add('Access-Control-Allow-Headers', "*")
-#         response.headers.add('Access-Control-Allow-Methods', "*")
-#         return response
+def kill_idle_connections():
+    """Elimina todas las conexiones idle en la base de datos MySQL"""
+    try:
+        # Conexión temporal para ejecutar el kill de conexiones idle
+        temp_conn = pymysql.connect(
+            host=Config.MYSQL_HOST,
+            user=Config.MYSQL_USER,
+            password=Config.MYSQL_PASSWORD,
+            database=Config.MYSQL_DB,
+            port=Config.MYSQL_PORT,
+            cursorclass=DictCursor
+        )
+        
+        with temp_conn.cursor() as cursor:
+            # Obtener todas las conexiones idle (que no sean la conexión actual)
+            cursor.execute("""
+                SELECT ID, TIME, COMMAND, USER, HOST, DB
+                FROM information_schema.PROCESSLIST
+                WHERE COMMAND = 'Sleep' 
+                AND USER = %s
+                AND DB = %s
+                AND ID != CONNECTION_ID()
+            """, (Config.MYSQL_USER, Config.MYSQL_DB))
+            
+            idle_connections = cursor.fetchall()
+            
+            # Matar cada conexión idle
+            for conn in idle_connections:
+                try:
+                    cursor.execute(f"KILL {conn['ID']}")
+                    print(f"🔪 Conexión idle eliminada: ID {conn['ID']} - Tiempo: {conn['TIME']} segundos")
+                except Exception as e:
+                    print(f"❌ Error al matar conexión {conn['ID']}: {e}")
+            
+            temp_conn.commit()
+            
+        temp_conn.close()
+        
+        if idle_connections:
+            print(f"✅ {len(idle_connections)} conexiones idle eliminadas")
+        else:
+            print("✅ No hay conexiones idle para eliminar")
+            
+    except Exception as e:
+        print(f"⚠️ Error al limpiar conexiones idle: {e}")
 
 def get_db():
+    # Primero eliminar todas las conexiones idle
+    kill_idle_connections()
+    
+    # Luego retornar una nueva conexión
     return pymysql.connect(
         host=Config.MYSQL_HOST,
         user=Config.MYSQL_USER,
@@ -36,7 +69,8 @@ def get_db():
     )
 
 def init_db():
-    return
+    # Inicialización de la base de datos
+    pass
 
 from routes.auth_routes import auth_bp
 from routes.passenger_routes import passenger_bp
