@@ -7,6 +7,12 @@ class Config:
     MYSQL_DB = os.environ.get('MYSQL_DB', 'defaultdb')
     MYSQL_PORT = int(os.environ.get('MYSQL_PORT', 22750))
 
-
     # JWT Secret (sin encriptación, solo para firmar)
-    JWT_SECRET = 'avit-secret-key-2024' 
+    JWT_SECRET = 'avit-secret-key-2024'
+    
+    # ✅ NUEVOS: Timeouts para evitar conexiones idle
+    MYSQL_CONNECT_TIMEOUT = 10
+    MYSQL_READ_TIMEOUT = 30
+    MYSQL_WRITE_TIMEOUT = 30
+    MYSQL_POOL_SIZE = 20
+    MYSQL_POOL_RECYCLE = 700
