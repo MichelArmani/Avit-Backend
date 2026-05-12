@@ -2,7 +2,7 @@ import aiohttp
 import polyline
 import math
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from utils.helpers import get_user_from_token, generate_trip_id
 from math import radians, sin, cos, sqrt, atan2
 import requests
@@ -142,6 +142,7 @@ def calculate_route():
     dest_lat = data.get('dest_lat')
     dest_lng = data.get('dest_lng')
     vehicle_type = data.get('vehicle_type', 'economy')
+    
     if origin_lat is None or origin_lng is None or dest_lat is None or dest_lng is None:
         origin = data.get('origin')
         destination = data.get('destination')
@@ -150,16 +151,20 @@ def calculate_route():
             origin_lng = origin.get('lng')
             dest_lat = destination.get('lat')
             dest_lng = destination.get('lng')
+    
     if origin_lat is None or origin_lng is None:
         return jsonify({'error': 'Coordenadas de origen inválidas'}), 400
     if dest_lat is None or dest_lng is None:
         return jsonify({'error': 'Coordenadas de destino inválidas'}), 400
+    
     try:
         route_info = route_service.calculate_route_sync(float(origin_lat), float(origin_lng), float(dest_lat), float(dest_lng))
         if not route_info.get('success'):
             return jsonify({'error': 'Error al calcular la ruta'}), 500
+        
         price_info = route_service.estimate_price(route_info['distance_km'], route_info['duration_min'], vehicle_type)
         geometry_for_map = route_info.get('geometry', [])
+        
         response_data = {
             'distance_km': route_info['distance_km'],
             'duration_minutes': route_info['duration_min'],
@@ -186,13 +191,16 @@ def calculate_direct_distance():
     origin_lng = origin.get('lng')
     dest_lat = destination.get('lat')
     dest_lng = destination.get('lng')
+    
     if None in [origin_lat, origin_lng, dest_lat, dest_lng]:
         return jsonify({'error': 'Coordenadas inválidas'}), 400
+    
     distance = route_service.calculate_distance_haversine(origin_lat, origin_lng, dest_lat, dest_lng)
     vehicle_type = data.get('vehicle_type', 'economy')
     estimated_duration_min = (distance / 30) * 60
     price_info = route_service.estimate_price(distance, estimated_duration_min, vehicle_type)
     geometry = route_service._generate_intermediate_points(origin_lat, origin_lng, dest_lat, dest_lng, num_points=20)
+    
     return jsonify({
         'success': True,
         'data': {
@@ -205,12 +213,12 @@ def calculate_direct_distance():
 
 @trips_bp.route('/trip/<trip_id>/route', methods=['GET'])
 def get_trip_route(trip_id):
-    from app import get_db
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
+    
     try:
         cursor.execute("""
             SELECT origin_lat, origin_lng, dest_lat, dest_lng, 
@@ -220,14 +228,17 @@ def get_trip_route(trip_id):
                 (SELECT id FROM drivers WHERE user_id = %s))
         """, (trip_id, user['id'], user['id']))
         trip = cursor.fetchone()
+        
         if not trip:
             return jsonify({'error': 'Viaje no encontrado'}), 404
+        
         route_info = route_service.calculate_route_sync(
             float(trip['origin_lat']),
             float(trip['origin_lng']),
             float(trip['dest_lat']),
             float(trip['dest_lng'])
         )
+        
         return jsonify({
             'success': True,
             'data': {
@@ -249,27 +260,28 @@ def get_trip_route(trip_id):
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @trips_bp.route('/request', methods=['POST'])
 def request_trip():
-    from app import get_db
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
+    
     data = request.json
     required_fields = ['origin_lat', 'origin_lng', 'dest_lat', 'dest_lng', 'origin_address', 'dest_address']
     for field in required_fields:
         if field not in data:
             return jsonify({'error': f'Campo requerido: {field}'}), 400
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
+    
     try:
         cursor.execute("""
             SELECT id, status FROM trips 
             WHERE passenger_id = %s AND status NOT IN ('completed', 'cancelled')
         """, (user['id'],))
         existing_trip = cursor.fetchone()
+        
         if existing_trip:
             return jsonify({
                 'error': 'Ya tienes un viaje activo. Completa o cancela el viaje actual antes de solicitar otro.',
@@ -278,24 +290,30 @@ def request_trip():
                     'status': existing_trip['status']
                 }
             }), 400
+        
         origin_lat = float(data['origin_lat'])
         origin_lng = float(data['origin_lng'])
         dest_lat = float(data['dest_lat'])
         dest_lng = float(data['dest_lng'])
+        
         if not (-90 <= origin_lat <= 90) or not (-180 <= origin_lng <= 180):
             return jsonify({'error': 'Coordenadas de origen inválidas'}), 400
         if not (-90 <= dest_lat <= 90) or not (-180 <= dest_lng <= 180):
             return jsonify({'error': 'Coordenadas de destino inválidas'}), 400
         if origin_lat == dest_lat and origin_lng == dest_lng:
             return jsonify({'error': 'El origen y el destino no pueden ser el mismo lugar'}), 400
+        
         vehicle_type = data.get('vehicle_type', 'economy')
         payment_method = data.get('payment_method', 'cash')
+        
         route_info = route_service.calculate_route_sync(origin_lat, origin_lng, dest_lat, dest_lng)
         price_info = route_service.estimate_price(route_info['distance_km'], route_info['duration_min'], vehicle_type)
+        
         estimated_price = price_info['total']
         estimated_distance = route_info['distance_km']
         estimated_duration = route_info['duration_min']
         trip_id = generate_trip_id()
+        
         cursor.execute("""
             INSERT INTO trips 
             (id, passenger_id, origin_lat, origin_lng, dest_lat, dest_lng,
@@ -318,8 +336,10 @@ def request_trip():
             estimated_duration,
             'searching'
         ))
-        db.commit()
+        g.db.commit()
+        
         print(f'🆕 New trip created: {trip_id} for passenger: {user["id"]}')
+        
         cursor.execute("""
             SELECT t.*, 
                    u_driver.full_name as driver_name,
@@ -338,8 +358,10 @@ def request_trip():
             WHERE t.id = %s
         """, (trip_id,))
         trip = cursor.fetchone()
+        
         if not trip:
             return jsonify({'error': 'Error al recuperar los datos del viaje'}), 500
+        
         response_data = {
             'trip_id': trip['id'],
             'status': trip['status'],
@@ -348,26 +370,26 @@ def request_trip():
             'estimated_duration': int(trip['estimated_duration']) if trip['estimated_duration'] else 0
         }
         return jsonify({'data': response_data}), 201
+        
     except ValueError as e:
-        db.rollback()
+        g.db.rollback()
         print(f"Value error in request_trip: {e}")
         return jsonify({'error': 'Formato de coordenadas inválido'}), 400
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         print(f"Error creating trip: {e}")
         return jsonify({'error': f'Error al crear el viaje: {str(e)}'}), 500
     finally:
         cursor.close()
-        db.close()
 
 @trips_bp.route('/current', methods=['GET'])
 def get_current_trip():
-    from app import get_db
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
+    
     try:
         cursor.execute("""
             SELECT t.*, 
@@ -385,8 +407,10 @@ def get_current_trip():
             ORDER BY t.created_at DESC LIMIT 1
         """, (user['id'],))
         trip = cursor.fetchone()
+        
         if not trip:
             return jsonify({'data': None}), 200
+        
         driver_data = None
         if trip.get('driver_id') and trip.get('driver_name'):
             driver_data = {
@@ -407,6 +431,7 @@ def get_current_trip():
                     'lng': float(trip['driver_lng'])
                 }
                 driver_data['eta'] = 5
+        
         response_data = {
             'id': trip['id'],
             'status': trip['status'],
@@ -434,19 +459,19 @@ def get_current_trip():
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @trips_bp.route('/history', methods=['GET'])
 def get_history():
-    from app import get_db
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
+    
     skip = request.args.get('skip', 0, type=int)
     limit = request.args.get('limit', 20, type=int)
     status = request.args.get('status')
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
+    
     try:
         query = """
             SELECT t.*,
@@ -458,13 +483,17 @@ def get_history():
             WHERE t.passenger_id = %s
         """
         params = [user['id']]
+        
         if status:
             query += ' AND t.status = %s'
             params.append(status)
+        
         query += ' ORDER BY t.created_at DESC LIMIT %s OFFSET %s'
         params.extend([limit, skip])
+        
         cursor.execute(query, params)
         trips_data = cursor.fetchall()
+        
         formatted_trips = []
         for trip in trips_data:
             formatted_trips.append({
@@ -480,6 +509,7 @@ def get_history():
                     'vehicle': f"{trip['vehicle_make']} {trip['vehicle_model']}" if trip['vehicle_make'] else 'Unknown'
                 }
             })
+        
         return jsonify({
             'data': {
                 'trips': formatted_trips,
@@ -491,54 +521,53 @@ def get_history():
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @trips_bp.route('/<trip_id>/cancel', methods=['POST'])
 def cancel_trip(trip_id):
-    from app import get_db
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
+    
     data = request.json
     reason = data.get('reason', 'Cancelled by user')
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
+    
     try:
         cursor.execute(
-    'UPDATE trips SET status = %s, cancellation_reason = %s WHERE id = %s AND passenger_id = %s',
-    ('cancelled', reason, trip_id, user['id'])
-)
-        db.commit()
+            'UPDATE trips SET status = %s, cancellation_reason = %s WHERE id = %s AND passenger_id = %s',
+            ('cancelled', reason, trip_id, user['id'])
+        )
+        g.db.commit()
         print(f'❌ Trip {trip_id} cancelled')
         return jsonify({'data': {'message': 'Trip cancelled'}}), 200
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @trips_bp.route('/<trip_id>/rate', methods=['POST'])
 def rate_trip(trip_id):
-    from app import get_db
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
+    
     data = request.json
     rating = data.get('rating')
     comment = data.get('comment')
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
+    
     try:
         cursor.execute(
             'UPDATE trips SET passenger_rating = %s WHERE id = %s AND passenger_id = %s',
             (rating, trip_id, user['id'])
         )
-        db.commit()
+        g.db.commit()
         return jsonify({'data': {'message': 'Rating submitted'}}), 200
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
