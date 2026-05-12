@@ -400,31 +400,16 @@ def get_current_trip():
                    d.current_lat as driver_lat,
                    d.current_lng as driver_lng,
                    d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_color,
-                   d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank
+                   d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank,
+                   t.passenger_rated_at, t.driver_rated_at
             FROM trips t
             LEFT JOIN drivers d ON t.driver_id = d.id
             LEFT JOIN users u_driver ON d.user_id = u_driver.id
-            WHERE t.passenger_id = %s AND t.status NOT IN ('completed', 'cancelled')
+            WHERE t.passenger_id = %s 
+              AND t.status NOT IN ('completed', 'cancelled')
             ORDER BY t.created_at DESC LIMIT 1
         """, (user['id'],))
         trip = cursor.fetchone()
-        
-        if not trip:
-            cursor.execute("""
-                SELECT t.*, 
-                       u_driver.full_name as driver_name,
-                       u_driver.phone_number as driver_phone,
-                       d.id as driver_table_id,
-                       d.rating as driver_rating,
-                       d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_color,
-                       d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank
-                FROM trips t
-                LEFT JOIN drivers d ON t.driver_id = d.id
-                LEFT JOIN users u_driver ON d.user_id = u_driver.id
-                WHERE t.passenger_id = %s AND t.status = 'completed'
-                ORDER BY t.created_at DESC LIMIT 1
-            """, (user['id'],))
-            trip = cursor.fetchone()
         
         if not trip:
             return jsonify({'data': None}), 200
@@ -441,7 +426,12 @@ def get_current_trip():
                     'model': trip['vehicle_model'] or 'Unknown',
                     'plate': trip['vehicle_plate'] or 'Unknown',
                     'color': trip['vehicle_color'] or 'Unknown'
-                }
+                },
+                'pagomovil': {
+                    'phone': trip['pagomovil_phone'] or '',
+                    'ci': trip['pagomovil_ci'] or '',
+                    'bank': trip['pagomovil_bank'] or ''
+                } if trip.get('pagomovil_phone') else None
             }
             if trip['driver_lat'] and trip['driver_lng']:
                 driver_data['location'] = {
@@ -449,15 +439,6 @@ def get_current_trip():
                     'lng': float(trip['driver_lng'])
                 }
                 driver_data['eta'] = 5
-            if trip.get('pagomovil_phone'):
-                driver_data['pagomovil'] = {
-                    'phone': trip['pagomovil_phone'],
-                    'ci': trip['pagomovil_ci'],
-                    'bank': trip['pagomovil_bank']
-                }
-        
-        passenger_rated = trip.get('passenger_rating') is not None
-        driver_rated = trip.get('driver_rating') is not None
         
         response_data = {
             'id': trip['id'],
@@ -479,10 +460,8 @@ def get_current_trip():
             'created_at': str(trip['created_at']) if trip['created_at'] else '',
             'payment_method': trip.get('payment_method', 'cash'),
             'vehicle_type': trip.get('vehicle_type', 'economy'),
-            'passenger_rated': passenger_rated,
-            'driver_rated': driver_rated,
-            'passenger_payment_confirmed': bool(trip.get('passenger_payment_confirmed')),
-            'driver_payment_confirmed': bool(trip.get('driver_payment_confirmed'))
+            'passenger_rated': trip.get('passenger_rated_at') is not None,
+            'driver_rated': trip.get('driver_rated_at') is not None
         }
         return jsonify({'data': response_data}), 200
     except Exception as e:
@@ -830,7 +809,7 @@ def passenger_confirm_payment(trip_id):
 @trips_bp.route('/passenger/payment-info/<trip_id>', methods=['GET'])
 def get_passenger_payment_info(trip_id):
     user = get_user_from_token(request.headers.get('Authorization'))
-    if not user):
+    if not user:
         return jsonify({'error': 'Unauthorized'}), 401
     
     cursor = g.db.cursor()
