@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from utils.helpers import generate_token, generate_verification_code
 from datetime import datetime, timedelta
 
@@ -6,9 +6,6 @@ auth_bp = Blueprint('auth', __name__)
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
-    # Importar get_db aquí, dentro de la función
-    from app import get_db
-    
     data = request.json
     phone_number = data.get('phone_number')
     full_name = data.get('full_name')
@@ -18,8 +15,8 @@ def register():
     if not phone_number or not full_name or not password:
         return jsonify({'error': 'Missing required fields'}), 400
     
-    db = get_db()
-    cursor = db.cursor()
+    # ✅ Usar conexión de g.db (abierta por middleware)
+    cursor = g.db.cursor()
     
     try:
         # Verificar si el teléfono ya existe
@@ -36,7 +33,7 @@ def register():
             'INSERT INTO verification_codes (phone_number, code, expires_at) VALUES (%s, %s, %s)',
             (phone_number, code, expires_at)
         )
-        db.commit()
+        g.db.commit()
         
         # En desarrollo, mostrar el código en consola
         print(f'📱 Verification code for {phone_number}: {code}')
@@ -51,22 +48,18 @@ def register():
         }), 201
         
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @auth_bp.route('/verify-phone', methods=['POST'])
 def verify_phone():
-    from app import get_db
-    
     data = request.json
     phone_number = data.get('phone_number')
     code = data.get('code')
     
-    db = get_db()
-    cursor = db.cursor()
+    cursor = g.db.cursor()
     
     try:
         # Verificar código
@@ -81,7 +74,7 @@ def verify_phone():
         
         # Marcar como usado
         cursor.execute('DELETE FROM verification_codes WHERE id = %s', (verification['id'],))
-        db.commit()
+        g.db.commit()
         
         return jsonify({
             'message': 'Phone verified successfully',
@@ -89,21 +82,17 @@ def verify_phone():
         }), 200
         
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @auth_bp.route('/resend-code', methods=['POST'])
 def resend_code():
-    from app import get_db
-    
     data = request.json
     phone_number = data.get('phone_number')
     
-    db = get_db()
-    cursor = db.cursor()
+    cursor = g.db.cursor()
     
     try:
         code = generate_verification_code()
@@ -113,7 +102,7 @@ def resend_code():
             'INSERT INTO verification_codes (phone_number, code, expires_at) VALUES (%s, %s, %s)',
             (phone_number, code, expires_at)
         )
-        db.commit()
+        g.db.commit()
         
         print(f'📱 New verification code for {phone_number}: {code}')
         
@@ -123,22 +112,18 @@ def resend_code():
         }), 200
         
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    from app import get_db
-    
     data = request.json
     phone_number = data.get('phone_number')
     password = data.get('password')
     
-    db = get_db()
-    cursor = db.cursor()
+    cursor = g.db.cursor()
     
     try:
         cursor.execute('SELECT * FROM users WHERE phone_number = %s', (phone_number,))
@@ -159,7 +144,7 @@ def login():
         if not current_token:
             token = generate_token()
             cursor.execute('UPDATE users SET token = %s WHERE id = %s', (token, user['id']))
-            db.commit()
+            g.db.commit()
             user['token'] = token
         
         # Obtener perfil de conductor si existe
@@ -196,32 +181,27 @@ def login():
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
 
 @auth_bp.route('/logout', methods=['POST'])
 def logout():
-    from app import get_db
-    
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     
     if not token:
         return jsonify({'message': 'No token provided'}), 200
     
-    db = get_db()
-    cursor = db.cursor()
+    cursor = g.db.cursor()
     try:
         cursor.execute('UPDATE users SET token = NULL WHERE token = %s', (token,))
-        db.commit()
+        g.db.commit()
         print('🔒 User logged out')
     except Exception as e:
         print(f"Error during logout: {e}")
     finally:
         cursor.close()
-        db.close()
     
     return jsonify({'message': 'Logged out'}), 200
 
-@auth_bp.route('/complete-registration', methods=['POST']) #4
+@auth_bp.route('/complete-registration', methods=['POST'])
 def complete_registration():
     data = request.json
     phone_number = data.get('phone_number')
@@ -231,9 +211,8 @@ def complete_registration():
     
     if not phone_number or not full_name or not password:
         return jsonify({'error': 'Missing required fields'}), 400
-    from app import get_db
-    db = get_db()
-    cursor = db.cursor()
+    
+    cursor = g.db.cursor()
     
     try:
         # Verificar si el teléfono ya está registrado
@@ -251,7 +230,7 @@ def complete_registration():
         """, (phone_number, full_name, email, password, token))
         
         user_id = cursor.lastrowid
-        db.commit()
+        g.db.commit()
         
         # Obtener usuario creado
         cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))
@@ -279,8 +258,7 @@ def complete_registration():
         }), 201
         
     except Exception as e:
-        db.rollback()
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-        db.close()
