@@ -60,19 +60,51 @@ def driver_profile():
     cursor = g.db.cursor()
     
     try:
-        cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
-        profile = cursor.fetchone()
-        
-        if not profile:
-            return jsonify({'data': None}), 200
-        
         if request.method == 'GET':
+            cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
+            profile = cursor.fetchone()
+            
+            if not profile:
+                return jsonify({'data': None}), 200
+            
             return jsonify({'data': profile})
-        else:
-            # PUT - Actualizar perfil
-            return jsonify({'data': {'message': 'Profile updated'}})
+        
+        else:  # PUT - ACTUALIZAR PERFIL
+            data = request.json
+            
+            # Campos que se pueden actualizar
+            allowed_fields = [
+                'license_number', 'license_expiry', 'vehicle_make', 'vehicle_model',
+                'vehicle_year', 'vehicle_plate', 'vehicle_color'
+            ]
+            
+            # Construir SET dinámicamente solo con los campos enviados
+            update_fields = []
+            params = []
+            
+            for field in allowed_fields:
+                if field in data:
+                    update_fields.append(f"{field} = %s")
+                    params.append(data[field])
+            
+            if not update_fields:
+                return jsonify({'error': 'No fields to update'}), 400
+            
+            # Agregar user_id al final de los parámetros
+            params.append(user['id'])
+            
+            query = f"UPDATE drivers SET {', '.join(update_fields)} WHERE user_id = %s"
+            cursor.execute(query, params)
+            g.db.commit()
+            
+            # Obtener perfil actualizado
+            cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
+            updated_profile = cursor.fetchone()
+            
+            return jsonify({'data': updated_profile}), 200
         
     except Exception as e:
+        g.db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
