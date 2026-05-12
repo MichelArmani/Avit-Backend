@@ -412,25 +412,6 @@ def get_current_trip():
         trip = cursor.fetchone()
         
         if not trip:
-            cursor.execute("""
-                SELECT t.*, 
-                       u_driver.full_name as driver_name,
-                       u_driver.phone_number as driver_phone,
-                       d.id as driver_table_id,
-                       d.rating as driver_rating,
-                       d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_color,
-                       d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank,
-                       t.passenger_payment_confirmed, t.driver_payment_confirmed,
-                       t.passenger_rated_at, t.driver_rated_at
-                FROM trips t
-                LEFT JOIN drivers d ON t.driver_id = d.id
-                LEFT JOIN users u_driver ON d.user_id = u_driver.id
-                WHERE t.passenger_id = %s AND t.status = 'completed'
-                ORDER BY t.created_at DESC LIMIT 1
-            """, (user['id'],))
-            trip = cursor.fetchone()
-        
-        if not trip:
             return jsonify({'data': None}), 200
         
         driver_data = None
@@ -631,13 +612,13 @@ def rate_trip(trip_id):
         g.db.commit()
         
         cursor.execute("""
-            SELECT passenger_rating, driver_rating, status 
+            SELECT passenger_rating, driver_rating, status, passenger_rated_at, driver_rated_at
             FROM trips 
             WHERE id = %s
         """, (trip_id,))
         trip = cursor.fetchone()
         
-        if trip['passenger_rating'] is not None and trip['driver_rating'] is not None and trip['status'] != 'completed':
+        if trip['passenger_rating'] is not None and trip['driver_rating'] is not None:
             cursor.execute("""
                 UPDATE trips 
                 SET status = 'completed', completed_at = NOW() 
@@ -645,6 +626,22 @@ def rate_trip(trip_id):
             """, (trip_id,))
             g.db.commit()
             print(f'✅ Trip {trip_id} fully completed and rated')
+        elif user_role == 'passenger' and trip['passenger_rating'] is not None and trip['driver_rating'] is None:
+            cursor.execute("""
+                UPDATE trips 
+                SET status = 'waiting_for_other_rating'
+                WHERE id = %s
+            """, (trip_id,))
+            g.db.commit()
+            print(f'📝 Trip {trip_id} waiting for driver rating')
+        elif user_role == 'driver' and trip['driver_rating'] is not None and trip['passenger_rating'] is None:
+            cursor.execute("""
+                UPDATE trips 
+                SET status = 'waiting_for_other_rating'
+                WHERE id = %s
+            """, (trip_id,))
+            g.db.commit()
+            print(f'📝 Trip {trip_id} waiting for passenger rating')
         elif trip['status'] == 'pending_payment':
             cursor.execute("""
                 UPDATE trips 
