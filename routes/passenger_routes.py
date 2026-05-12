@@ -85,7 +85,7 @@ def register_driver():
     finally:
         cursor.close()
 
-@passenger_bp.route('/profile', methods=['GET', 'PUT'])  # ✅ CORREGIDO
+@passenger_bp.route('/profile', methods=['GET', 'PUT'])
 def driver_profile():
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
@@ -97,32 +97,43 @@ def driver_profile():
         if request.method == 'GET':
             cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
             profile = cursor.fetchone()
+            
             if not profile:
                 return jsonify({'data': None}), 200
+            
             if 'pagomovil_phone' not in profile:
                 profile['pagomovil_phone'] = ''
                 profile['pagomovil_ci'] = ''
                 profile['pagomovil_bank'] = ''
+            
             return jsonify({'data': profile}), 200
-        else:
+        
+        else:  # PUT - ACTUALIZAR PERFIL
             data = request.json
-            update_fields = []
-            params = []
+            
+            # Campos que se pueden actualizar (incluyendo pagomovil)
             allowed_fields = [
                 'license_number', 'license_expiry', 'vehicle_make', 'vehicle_model',
                 'vehicle_year', 'vehicle_plate', 'vehicle_color',
                 'pagomovil_phone', 'pagomovil_ci', 'pagomovil_bank'
             ]
+            
+            update_fields = []
+            params = []
+            
             for field in allowed_fields:
                 if field in data:
+                    # Validaciones específicas
                     if field == 'pagomovil_phone' and data[field]:
                         phone_pattern = r'^(0412|0414|0416|0424|0426|0410|0420)\d{7}$'
                         if not re.match(phone_pattern, data[field].replace('-', '')):
                             return jsonify({'error': 'Formato de teléfono inválido'}), 400
+                    
                     if field == 'pagomovil_ci' and data[field]:
                         ci_pattern = r'^[VEJPG]\d{6,8}$'
                         if not re.match(ci_pattern, data[field].upper()):
                             return jsonify({'error': 'Formato de cédula inválido'}), 400
+                    
                     if field == 'pagomovil_bank' and data[field]:
                         valid_banks = [
                             'Banco de Venezuela', 'Banesco', 'Mercantil', 'Provincial',
@@ -132,21 +143,24 @@ def driver_profile():
                         ]
                         if data[field] not in valid_banks:
                             return jsonify({'error': 'Banco inválido'}), 400
+                    
                     update_fields.append(f"{field} = %s")
                     params.append(data[field])
             
             if not update_fields:
-                return jsonify({'data': {'message': 'No fields to update'}}), 200
+                return jsonify({'error': 'No fields to update'}), 400
             
             params.append(user['id'])
             query = f"UPDATE drivers SET {', '.join(update_fields)} WHERE user_id = %s"
             cursor.execute(query, params)
             g.db.commit()
             
+            # Obtener perfil actualizado
             cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
             updated_profile = cursor.fetchone()
-            return jsonify({'data': updated_profile}), 200
             
+            return jsonify({'data': updated_profile}), 200
+        
     except Exception as e:
         g.db.rollback()
         return jsonify({'error': str(e)}), 500
