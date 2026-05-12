@@ -21,8 +21,9 @@ def register_driver():
         cursor.execute("""
             INSERT INTO drivers 
             (user_id, license_number, license_expiry, vehicle_make, vehicle_model, 
-             vehicle_year, vehicle_plate, vehicle_color)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             vehicle_year, vehicle_plate, vehicle_color, 
+             pagomovil_phone, pagomovil_ci, pagomovil_bank)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             user['id'],
             data['license_number'],
@@ -31,7 +32,10 @@ def register_driver():
             data['vehicle_model'],
             data['vehicle_year'],
             data['vehicle_plate'],
-            data['vehicle_color']
+            data['vehicle_color'],
+            data['pagomovil_phone'],
+            data['pagomovil_ci'],
+            data['pagomovil_bank']
         ))
         
         cursor.execute('UPDATE users SET is_driver = TRUE WHERE id = %s', (user['id'],))
