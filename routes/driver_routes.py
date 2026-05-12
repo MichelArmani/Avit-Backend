@@ -72,27 +72,25 @@ def driver_profile():
         else:  # PUT - ACTUALIZAR PERFIL
             data = request.json
             
-            # Campos que se pueden actualizar
+            # ✅ INCLUIR campos de PagoMóvil
             allowed_fields = [
                 'license_number', 'license_expiry', 'vehicle_make', 'vehicle_model',
-                'vehicle_year', 'vehicle_plate', 'vehicle_color'
+                'vehicle_year', 'vehicle_plate', 'vehicle_color',
+                'pagomovil_phone', 'pagomovil_ci', 'pagomovil_bank'  # ✅ AGREGADOS
             ]
             
-            # Construir SET dinámicamente solo con los campos enviados
             update_fields = []
             params = []
             
             for field in allowed_fields:
-                if field in data:
+                if field in data and data[field] is not None:  # ✅ Permitir vacíos también
                     update_fields.append(f"{field} = %s")
                     params.append(data[field])
             
             if not update_fields:
                 return jsonify({'error': 'No fields to update'}), 400
             
-            # Agregar user_id al final de los parámetros
             params.append(user['id'])
-            
             query = f"UPDATE drivers SET {', '.join(update_fields)} WHERE user_id = %s"
             cursor.execute(query, params)
             g.db.commit()
