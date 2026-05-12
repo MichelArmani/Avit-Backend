@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 from utils.helpers import get_user_from_token, calculate_distance
-import json
+from datetime import datetime
 
 driver_bp = Blueprint('driver', __name__)
 
@@ -43,10 +43,7 @@ def register_driver():
         
         print(f'✅ Driver registered for user {user["id"]}')
         
-        cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
-        driver_profile = cursor.fetchone()
-        
-        return jsonify({'data': driver_profile}), 201
+        return jsonify({'data': {'message': 'Driver registered successfully'}}), 201
         
     except Exception as e:
         g.db.rollback()
@@ -171,6 +168,8 @@ def update_location():
 
 @driver_bp.route('/available-trips', methods=['GET'])
 def get_available_trips():
+    import json
+    
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -288,11 +287,9 @@ def accept_trip(trip_id):
         
         cursor.execute("""
             SELECT t.*, u.full_name as passenger_name, u.phone_number as passenger_phone,
-                   u.rating as passenger_rating,
-                   d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank
+                   u.rating as passenger_rating
             FROM trips t
             JOIN users u ON t.passenger_id = u.id
-            JOIN drivers d ON t.driver_id = d.id
             WHERE t.id = %s
         """, (trip_id,))
         
@@ -321,13 +318,6 @@ def accept_trip(trip_id):
                 'lng': float(trip_data['dest_lng'])
             }
             
-            if trip_data.get('pagomovil_phone'):
-                trip_data['pagomovil'] = {
-                    'phone': trip_data['pagomovil_phone'],
-                    'ci': trip_data['pagomovil_ci'],
-                    'bank': trip_data['pagomovil_bank']
-                }
-            
             return jsonify({'data': trip_data}), 200
         
         return jsonify({'data': {'message': 'Trip accepted'}}), 200
@@ -340,6 +330,8 @@ def accept_trip(trip_id):
 
 @driver_bp.route('/trips/<trip_id>/reject', methods=['POST'])
 def reject_trip(trip_id):
+    import json
+    
     user = get_user_from_token(request.headers.get('Authorization'))
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -400,11 +392,9 @@ def start_trip(trip_id):
         
         cursor.execute("""
             SELECT t.*, u.full_name as passenger_name, u.phone_number as passenger_phone,
-                   u.rating as passenger_rating,
-                   d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank
+                   u.rating as passenger_rating
             FROM trips t
             JOIN users u ON t.passenger_id = u.id
-            JOIN drivers d ON t.driver_id = d.id
             WHERE t.id = %s
         """, (trip_id,))
         
@@ -470,13 +460,7 @@ def complete_trip(trip_id):
         
         print(f'✅ Trip {trip_id} completed by driver, waiting for payment')
         
-        return jsonify({
-            'data': {
-                'id': trip_id,
-                'status': 'pending_payment',
-                'message': 'Trip completed, waiting for payment confirmation'
-            }
-        }), 200
+        return jsonify({'data': {'id': trip_id, 'status': 'pending_payment', 'message': 'Trip completed, waiting for payment confirmation'}}), 200
         
     except Exception as e:
         g.db.rollback()
@@ -617,64 +601,84 @@ def get_earnings():
         return jsonify({'error': 'Unauthorized'}), 401
     
     period = request.args.get('period', 'week')
+    
     cursor = g.db.cursor()
     
     try:
-        cursor.execute('SELECT id FROM drivers WHERE user_id = %s', (user['id'],))
+        cursor.execute('SELECT * FROM drivers WHERE user_id = %s', (user['id'],))
         driver = cursor.fetchone()
         
         if not driver:
-            return jsonify({'data': None}), 200
+            return jsonify({'data': {
+                'driver_earnings': 0,
+                'total_trips': 0,
+                'avg_per_trip': 0,
+                'daily_breakdown': []
+            }}), 200
         
         if period == 'today':
-            date_filter = "DATE(completed_at) = CURDATE()"
+            cursor.execute("""
+                SELECT COALESCE(SUM(estimated_price), 0) as total, COUNT(*) as trips
+                FROM trips 
+                WHERE driver_id = %s AND status = 'completed' AND DATE(completed_at) = CURDATE()
+            """, (driver['id'],))
         elif period == 'week':
-            date_filter = "YEARWEEK(completed_at, 1) = YEARWEEK(CURDATE(), 1)"
+            cursor.execute("""
+                SELECT COALESCE(SUM(estimated_price), 0) as total, COUNT(*) as trips,
+                       DATE(completed_at) as day
+                FROM trips 
+                WHERE driver_id = %s AND status = 'completed' AND completed_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                GROUP BY DATE(completed_at)
+                ORDER BY day DESC
+            """, (driver['id'],))
         else:
-            date_filter = "MONTH(completed_at) = MONTH(CURDATE()) AND YEAR(completed_at) = YEAR(CURDATE())"
+            cursor.execute("""
+                SELECT COALESCE(SUM(estimated_price), 0) as total, COUNT(*) as trips,
+                       DATE(completed_at) as day
+                FROM trips 
+                WHERE driver_id = %s AND status = 'completed' AND completed_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                GROUP BY DATE(completed_at)
+                ORDER BY day DESC
+            """, (driver['id'],))
         
-        cursor.execute(f"""
-            SELECT 
-                COALESCE(SUM(estimated_price * 0.75), 0) as driver_earnings,
-                COUNT(*) as total_trips,
-                COALESCE(AVG(estimated_price * 0.75), 0) as avg_per_trip
-            FROM trips 
-            WHERE driver_id = %s AND status = 'completed' AND {date_filter}
-        """, (driver['id'],))
+        result = cursor.fetchall()
         
-        earnings_data = cursor.fetchone()
-        
-        cursor.execute(f"""
-            SELECT 
-                DATE(completed_at) as day,
-                COALESCE(SUM(estimated_price * 0.75), 0) as earnings,
-                COUNT(*) as trips
-            FROM trips 
-            WHERE driver_id = %s AND status = 'completed' AND {date_filter}
-            GROUP BY DATE(completed_at)
-            ORDER BY day DESC
-        """, (driver['id'],))
-        
-        daily_breakdown = []
-        for row in cursor.fetchall():
-            daily_breakdown.append({
-                'day': row['day'].strftime('%A') if row['day'] else '',
-                'earnings': float(row['earnings']),
-                'trips': row['trips']
-            })
-        
-        return jsonify({
-            'data': {
-                'driver_earnings': float(earnings_data['driver_earnings']),
-                'total_trips': earnings_data['total_trips'],
-                'avg_per_trip': float(earnings_data['avg_per_trip']),
-                'daily_breakdown': daily_breakdown
-            }
-        }), 200
+        if period == 'today':
+            total = result[0]['total'] if result else 0
+            trips_count = result[0]['trips'] if result else 0
+            return jsonify({
+                'data': {
+                    'driver_earnings': float(total),
+                    'total_trips': int(trips_count),
+                    'avg_per_trip': float(total / trips_count if trips_count > 0 else 0),
+                    'daily_breakdown': []
+                }
+            }), 200
+        else:
+            daily_breakdown = []
+            total = 0
+            trips_count = 0
+            for row in result:
+                total += float(row['total'])
+                trips_count += int(row['trips'])
+                daily_breakdown.append({
+                    'day': str(row['day']),
+                    'earnings': float(row['total']),
+                    'trips': int(row['trips'])
+                })
+            
+            return jsonify({
+                'data': {
+                    'driver_earnings': float(total),
+                    'total_trips': int(trips_count),
+                    'avg_per_trip': float(total / trips_count if trips_count > 0 else 0),
+                    'daily_breakdown': daily_breakdown
+                }
+            }), 200
         
     except Exception as e:
         print(f"Error getting earnings: {e}")
-        return jsonify({'data': None}), 200
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
 
@@ -691,44 +695,27 @@ def get_stats():
         driver = cursor.fetchone()
         
         if not driver:
-            return jsonify({
-                'data': {
-                    'total_trips': 0,
-                    'avg_rating': 5.0,
-                    'acceptance_rate': 100,
-                    'cancellation_rate': 0
-                }
-            }), 200
+            return jsonify({'data': {
+                'total_trips': 0,
+                'avg_rating': 5.0,
+                'acceptance_rate': 100,
+                'cancellation_rate': 0
+            }}), 200
         
-        total_trips = driver['total_trips'] or 0
-        total_accepted = total_trips
-        total_rejected = 0
-        
-        try:
-            cursor.execute("""
-                SELECT COUNT(*) as total_accepted 
-                FROM trips 
-                WHERE driver_id = %s AND status IN ('completed', 'in_progress', 'driver_assigned')
-            """, (driver['id'],))
-            total_accepted = cursor.fetchone()['total_accepted'] or 0
-            
-            cursor.execute("""
-                SELECT COUNT(*) as total_rejected 
-                FROM trips 
-                WHERE rejected_drivers IS NOT NULL AND JSON_CONTAINS(rejected_drivers, %s)
-            """, (json.dumps(str(driver['id'])),))
-            total_rejected = cursor.fetchone()['total_rejected'] or 0
-        except:
-            pass
-        
-        total_requests = total_accepted + total_rejected
-        acceptance_rate = (total_accepted / total_requests * 100) if total_requests > 0 else 100
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_trips,
+                COALESCE(AVG(passenger_rating), 5.0) as avg_rating
+            FROM trips 
+            WHERE driver_id = %s AND status = 'completed'
+        """, (driver['id'],))
+        stats = cursor.fetchone()
         
         return jsonify({
             'data': {
-                'total_trips': int(driver['total_trips']) if driver['total_trips'] else 0,
-                'avg_rating': float(driver['rating']) if driver['rating'] else 5.0,
-                'acceptance_rate': round(acceptance_rate, 2),
+                'total_trips': int(stats['total_trips']) if stats['total_trips'] else 0,
+                'avg_rating': float(stats['avg_rating']) if stats['avg_rating'] else 5.0,
+                'acceptance_rate': float(driver['acceptance_rate']) if driver['acceptance_rate'] else 100.0,
                 'cancellation_rate': float(driver['cancellation_rate']) if driver['cancellation_rate'] else 0.0
             }
         }), 200
