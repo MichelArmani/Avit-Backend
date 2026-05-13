@@ -661,22 +661,22 @@ def driver_complete_trip(trip_id):
         if trip['status'] != 'in_progress':
             return jsonify({'error': f'Cannot complete trip with status: {trip["status"]}'}), 400
         
+        # Cambiar a 'pending_payment' para que el conductor confirme el pago
         cursor.execute("""
             UPDATE trips 
-            SET status = 'completed', 
-                actual_end_time = NOW(),
-                completed_at = NOW()
+            SET status = 'pending_payment', 
+                actual_end_time = NOW()
             WHERE id = %s
         """, (trip_id,))
         g.db.commit()
         
-        print(f'✅ Trip {trip_id} completed successfully')
+        print(f'✅ Trip {trip_id} completed, waiting for payment confirmation')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'completed',
-                'message': 'Trip completed successfully'
+                'status': 'pending_payment',
+                'message': 'Trip completed, waiting for payment confirmation'
             }
         }), 200
         
@@ -686,6 +686,7 @@ def driver_complete_trip(trip_id):
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
+
 
 @trips_bp.route('/driver/trips/<trip_id>/confirm-payment', methods=['POST'])
 def driver_confirm_payment(trip_id):
@@ -707,6 +708,9 @@ def driver_confirm_payment(trip_id):
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
         
+        if trip['status'] != 'pending_payment':
+            return jsonify({'error': f'Invalid status for payment confirmation: {trip["status"]}'}), 400
+        
         cursor.execute("""
             UPDATE trips 
             SET driver_payment_confirmed = TRUE,
@@ -721,16 +725,18 @@ def driver_confirm_payment(trip_id):
         if trip_data and trip_data.get('passenger_payment_confirmed'):
             cursor.execute("""
                 UPDATE trips 
-                SET status = 'completed', completed_at = NOW()
+                SET status = 'waiting_for_rating' 
                 WHERE id = %s
             """, (trip_id,))
             g.db.commit()
-            print(f'💰 Both confirmed payment for trip {trip_id}, trip completed')
+            print(f'💰 Both confirmed payment for trip {trip_id}, waiting for rating')
+        else:
+            print(f'💰 Driver confirmed payment for trip {trip_id}, waiting for passenger confirmation')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'completed' if (trip_data and trip_data.get('passenger_payment_confirmed')) else 'pending_payment',
+                'status': 'waiting_for_rating' if (trip_data and trip_data.get('passenger_payment_confirmed')) else 'pending_payment',
                 'message': 'Payment confirmed by driver'
             }
         }), 200
@@ -741,6 +747,7 @@ def driver_confirm_payment(trip_id):
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
+
 
 @trips_bp.route('/passenger/trips/<trip_id>/confirm-payment', methods=['POST'])
 def passenger_confirm_payment(trip_id):
@@ -761,6 +768,9 @@ def passenger_confirm_payment(trip_id):
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
         
+        if trip['status'] != 'pending_payment':
+            return jsonify({'error': f'Invalid status for payment confirmation: {trip["status"]}'}), 400
+        
         cursor.execute("""
             UPDATE trips 
             SET passenger_payment_confirmed = TRUE,
@@ -775,16 +785,18 @@ def passenger_confirm_payment(trip_id):
         if trip_data and trip_data.get('driver_payment_confirmed'):
             cursor.execute("""
                 UPDATE trips 
-                SET status = 'completed', completed_at = NOW()
+                SET status = 'waiting_for_rating' 
                 WHERE id = %s
             """, (trip_id,))
             g.db.commit()
-            print(f'💰 Both confirmed payment for trip {trip_id}, trip completed')
+            print(f'💰 Both confirmed payment for trip {trip_id}, waiting for rating')
+        else:
+            print(f'💰 Passenger confirmed payment for trip {trip_id}, waiting for driver confirmation')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'completed' if (trip_data and trip_data.get('driver_payment_confirmed')) else 'pending_payment',
+                'status': 'waiting_for_rating' if (trip_data and trip_data.get('driver_payment_confirmed')) else 'pending_payment',
                 'message': 'Payment confirmed by passenger'
             }
         }), 200
