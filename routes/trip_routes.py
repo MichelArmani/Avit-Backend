@@ -1,10 +1,9 @@
-
-from flask import Blueprint, request, jsonify, g
-from utils.helpers import get_user_from_token, generate_trip_id
-from datetime import datetime
 import aiohttp
 import polyline
 import math
+from datetime import datetime
+from flask import Blueprint, request, jsonify, g
+from utils.helpers import get_user_from_token, generate_trip_id
 from math import radians, sin, cos, sqrt, atan2
 import requests
 
@@ -402,12 +401,12 @@ def get_current_trip():
                    d.current_lng as driver_lng,
                    d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_color,
                    d.pagomovil_phone, d.pagomovil_ci, d.pagomovil_bank,
-                   t.passenger_payment_confirmed, t.driver_payment_confirmed,
                    t.passenger_rated_at, t.driver_rated_at
             FROM trips t
             LEFT JOIN drivers d ON t.driver_id = d.id
             LEFT JOIN users u_driver ON d.user_id = u_driver.id
-            WHERE t.passenger_id = %s AND t.status NOT IN ('completed', 'cancelled')
+            WHERE t.passenger_id = %s 
+              AND t.status NOT IN ('completed', 'cancelled')
             ORDER BY t.created_at DESC LIMIT 1
         """, (user['id'],))
         trip = cursor.fetchone()
@@ -427,7 +426,12 @@ def get_current_trip():
                     'model': trip['vehicle_model'] or 'Unknown',
                     'plate': trip['vehicle_plate'] or 'Unknown',
                     'color': trip['vehicle_color'] or 'Unknown'
-                }
+                },
+                'pagomovil': {
+                    'phone': trip['pagomovil_phone'] or '',
+                    'ci': trip['pagomovil_ci'] or '',
+                    'bank': trip['pagomovil_bank'] or ''
+                } if trip.get('pagomovil_phone') else None
             }
             if trip['driver_lat'] and trip['driver_lng']:
                 driver_data['location'] = {
@@ -435,12 +439,6 @@ def get_current_trip():
                     'lng': float(trip['driver_lng'])
                 }
                 driver_data['eta'] = 5
-            if trip.get('pagomovil_phone'):
-                driver_data['pagomovil'] = {
-                    'phone': trip['pagomovil_phone'],
-                    'ci': trip['pagomovil_ci'],
-                    'bank': trip['pagomovil_bank']
-                }
         
         response_data = {
             'id': trip['id'],
@@ -462,8 +460,6 @@ def get_current_trip():
             'created_at': str(trip['created_at']) if trip['created_at'] else '',
             'payment_method': trip.get('payment_method', 'cash'),
             'vehicle_type': trip.get('vehicle_type', 'economy'),
-            'passenger_payment_confirmed': bool(trip.get('passenger_payment_confirmed')),
-            'driver_payment_confirmed': bool(trip.get('driver_payment_confirmed')),
             'passenger_rated': trip.get('passenger_rated_at') is not None,
             'driver_rated': trip.get('driver_rated_at') is not None
         }
@@ -585,7 +581,7 @@ def rate_trip(trip_id):
                 SET passenger_rating = %s, 
                     passenger_comment = %s,
                     passenger_rated_at = NOW()
-                WHERE id = %s AND passenger_id = %s AND status IN ('completed', 'in_progress', 'pending_payment')
+                WHERE id = %s AND passenger_id = %s AND status IN ('pending_payment', 'waiting_for_rating', 'completed')
             """, (rating, comment, trip_id, user['id']))
             
             cursor.execute("""
@@ -607,27 +603,33 @@ def rate_trip(trip_id):
                     driver_rated_at = NOW()
                 WHERE id = %s AND driver_id IN (
                     SELECT id FROM drivers WHERE user_id = %s
-                ) AND status IN ('completed', 'in_progress', 'pending_payment')
+                ) AND status IN ('pending_payment', 'waiting_for_rating', 'completed')
             """, (rating, comment, trip_id, user['id']))
         
         g.db.commit()
         
         cursor.execute("""
-            SELECT status, passenger_rated_at, driver_rated_at
+            SELECT passenger_rating, driver_rating, status 
             FROM trips 
             WHERE id = %s
         """, (trip_id,))
         trip = cursor.fetchone()
         
-        if trip['passenger_rated_at'] is not None and trip['driver_rated_at'] is not None:
-            if trip['status'] != 'completed':
-                cursor.execute("""
-                    UPDATE trips 
-                    SET status = 'completed', completed_at = NOW() 
-                    WHERE id = %s
-                """, (trip_id,))
-                g.db.commit()
-                print(f'✅ Trip {trip_id} fully completed after both ratings')
+        if trip['passenger_rating'] is not None and trip['driver_rating'] is not None and trip['status'] != 'completed':
+            cursor.execute("""
+                UPDATE trips 
+                SET status = 'completed', completed_at = NOW() 
+                WHERE id = %s
+            """, (trip_id,))
+            g.db.commit()
+            print(f'✅ Trip {trip_id} fully completed and rated')
+        elif trip['status'] == 'pending_payment':
+            cursor.execute("""
+                UPDATE trips 
+                SET status = 'completed', completed_at = NOW() 
+                WHERE id = %s
+            """, (trip_id,))
+            g.db.commit()
         
         return jsonify({'data': {'message': 'Rating submitted successfully'}}), 200
         
@@ -661,21 +663,19 @@ def driver_complete_trip(trip_id):
         if trip['status'] != 'in_progress':
             return jsonify({'error': f'Cannot complete trip with status: {trip["status"]}'}), 400
         
-        # Cambiar a 'pending_payment' para que el conductor confirme el pago
         cursor.execute("""
             UPDATE trips 
-            SET status = 'pending_payment', 
-                actual_end_time = NOW()
+            SET status = %s, actual_end_time = NOW() 
             WHERE id = %s
-        """, (trip_id,))
+        """, ('completed', trip_id))
         g.db.commit()
         
-        print(f'✅ Trip {trip_id} completed, waiting for payment confirmation')
+        print(f'✅ Trip {trip_id} completed by driver, waiting for payment')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'pending_payment',
+                'status': 'completed',
                 'message': 'Trip completed, waiting for payment confirmation'
             }
         }), 200
@@ -686,7 +686,6 @@ def driver_complete_trip(trip_id):
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-
 
 @trips_bp.route('/driver/trips/<trip_id>/confirm-payment', methods=['POST'])
 def driver_confirm_payment(trip_id):
@@ -747,7 +746,6 @@ def driver_confirm_payment(trip_id):
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
-
 
 @trips_bp.route('/passenger/trips/<trip_id>/confirm-payment', methods=['POST'])
 def passenger_confirm_payment(trip_id):
@@ -834,9 +832,9 @@ def get_passenger_payment_info(trip_id):
         return jsonify({
             'data': {
                 'pagomovil': {
-                    'phone': payment_info['pagomovil_phone'] or '',
-                    'ci': payment_info['pagomovil_ci'] or '',
-                    'bank': payment_info['pagomovil_bank'] or ''
+                    'phone': payment_info['pagomovil_phone'],
+                    'ci': payment_info['pagomovil_ci'],
+                    'bank': payment_info['pagomovil_bank']
                 },
                 'amount': float(payment_info['estimated_price']),
                 'driver_name': payment_info['driver_name']
@@ -875,9 +873,9 @@ def get_driver_payment_info(trip_id):
         return jsonify({
             'data': {
                 'pagomovil': {
-                    'phone': payment_info['pagomovil_phone'] or '',
-                    'ci': payment_info['pagomovil_ci'] or '',
-                    'bank': payment_info['pagomovil_bank'] or ''
+                    'phone': payment_info['pagomovil_phone'],
+                    'ci': payment_info['pagomovil_ci'],
+                    'bank': payment_info['pagomovil_bank']
                 },
                 'amount': float(payment_info['estimated_price']),
                 'passenger_name': payment_info['passenger_name']
