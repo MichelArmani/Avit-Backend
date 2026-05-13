@@ -1,9 +1,10 @@
+
+from flask import Blueprint, request, jsonify, g
+from utils.helpers import get_user_from_token, generate_trip_id
+from datetime import datetime
 import aiohttp
 import polyline
 import math
-from datetime import datetime
-from flask import Blueprint, request, jsonify, g
-from utils.helpers import get_user_from_token, generate_trip_id
 from math import radians, sin, cos, sqrt, atan2
 import requests
 
@@ -584,7 +585,7 @@ def rate_trip(trip_id):
                 SET passenger_rating = %s, 
                     passenger_comment = %s,
                     passenger_rated_at = NOW()
-                WHERE id = %s AND passenger_id = %s AND status IN ('pending_payment', 'waiting_for_rating', 'waiting_for_other_rating', 'completed')
+                WHERE id = %s AND passenger_id = %s AND status IN ('completed', 'in_progress', 'pending_payment')
             """, (rating, comment, trip_id, user['id']))
             
             cursor.execute("""
@@ -606,49 +607,27 @@ def rate_trip(trip_id):
                     driver_rated_at = NOW()
                 WHERE id = %s AND driver_id IN (
                     SELECT id FROM drivers WHERE user_id = %s
-                ) AND status IN ('pending_payment', 'waiting_for_rating', 'waiting_for_other_rating', 'completed')
+                ) AND status IN ('completed', 'in_progress', 'pending_payment')
             """, (rating, comment, trip_id, user['id']))
         
         g.db.commit()
         
         cursor.execute("""
-            SELECT passenger_rating, driver_rating, status, passenger_rated_at, driver_rated_at
+            SELECT status, passenger_rated_at, driver_rated_at
             FROM trips 
             WHERE id = %s
         """, (trip_id,))
         trip = cursor.fetchone()
         
-        if trip['passenger_rating'] is not None and trip['driver_rating'] is not None:
-            cursor.execute("""
-                UPDATE trips 
-                SET status = 'completed', completed_at = NOW() 
-                WHERE id = %s
-            """, (trip_id,))
-            g.db.commit()
-            print(f'✅ Trip {trip_id} fully completed and rated')
-        elif user_role == 'passenger' and trip['passenger_rating'] is not None and trip['driver_rating'] is None:
-            cursor.execute("""
-                UPDATE trips 
-                SET status = 'waiting_for_other_rating'
-                WHERE id = %s
-            """, (trip_id,))
-            g.db.commit()
-            print(f'📝 Trip {trip_id} waiting for driver rating')
-        elif user_role == 'driver' and trip['driver_rating'] is not None and trip['passenger_rating'] is None:
-            cursor.execute("""
-                UPDATE trips 
-                SET status = 'waiting_for_other_rating'
-                WHERE id = %s
-            """, (trip_id,))
-            g.db.commit()
-            print(f'📝 Trip {trip_id} waiting for passenger rating')
-        elif trip['status'] == 'pending_payment':
-            cursor.execute("""
-                UPDATE trips 
-                SET status = 'waiting_for_other_rating' 
-                WHERE id = %s
-            """, (trip_id,))
-            g.db.commit()
+        if trip['passenger_rated_at'] is not None and trip['driver_rated_at'] is not None:
+            if trip['status'] != 'completed':
+                cursor.execute("""
+                    UPDATE trips 
+                    SET status = 'completed', completed_at = NOW() 
+                    WHERE id = %s
+                """, (trip_id,))
+                g.db.commit()
+                print(f'✅ Trip {trip_id} fully completed after both ratings')
         
         return jsonify({'data': {'message': 'Rating submitted successfully'}}), 200
         
@@ -684,18 +663,20 @@ def driver_complete_trip(trip_id):
         
         cursor.execute("""
             UPDATE trips 
-            SET status = %s, actual_end_time = NOW() 
+            SET status = 'completed', 
+                actual_end_time = NOW(),
+                completed_at = NOW()
             WHERE id = %s
-        """, ('pending_payment', trip_id))
+        """, (trip_id,))
         g.db.commit()
         
-        print(f'✅ Trip {trip_id} completed by driver, waiting for payment')
+        print(f'✅ Trip {trip_id} completed successfully')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'pending_payment',
-                'message': 'Trip completed, waiting for payment confirmation'
+                'status': 'completed',
+                'message': 'Trip completed successfully'
             }
         }), 200
         
@@ -726,9 +707,6 @@ def driver_confirm_payment(trip_id):
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
         
-        if trip['status'] != 'pending_payment':
-            return jsonify({'error': f'Invalid status for payment confirmation: {trip["status"]}'}), 400
-        
         cursor.execute("""
             UPDATE trips 
             SET driver_payment_confirmed = TRUE,
@@ -743,18 +721,16 @@ def driver_confirm_payment(trip_id):
         if trip_data and trip_data.get('passenger_payment_confirmed'):
             cursor.execute("""
                 UPDATE trips 
-                SET status = 'waiting_for_rating' 
+                SET status = 'completed', completed_at = NOW()
                 WHERE id = %s
             """, (trip_id,))
             g.db.commit()
-            print(f'💰 Both confirmed payment for trip {trip_id}, waiting for rating')
-        else:
-            print(f'💰 Driver confirmed payment for trip {trip_id}, waiting for passenger confirmation')
+            print(f'💰 Both confirmed payment for trip {trip_id}, trip completed')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'waiting_for_rating' if (trip_data and trip_data.get('passenger_payment_confirmed')) else 'pending_payment',
+                'status': 'completed' if (trip_data and trip_data.get('passenger_payment_confirmed')) else 'pending_payment',
                 'message': 'Payment confirmed by driver'
             }
         }), 200
@@ -785,9 +761,6 @@ def passenger_confirm_payment(trip_id):
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
         
-        if trip['status'] != 'pending_payment':
-            return jsonify({'error': f'Invalid status for payment confirmation: {trip["status"]}'}), 400
-        
         cursor.execute("""
             UPDATE trips 
             SET passenger_payment_confirmed = TRUE,
@@ -802,18 +775,16 @@ def passenger_confirm_payment(trip_id):
         if trip_data and trip_data.get('driver_payment_confirmed'):
             cursor.execute("""
                 UPDATE trips 
-                SET status = 'waiting_for_rating' 
+                SET status = 'completed', completed_at = NOW()
                 WHERE id = %s
             """, (trip_id,))
             g.db.commit()
-            print(f'💰 Both confirmed payment for trip {trip_id}, waiting for rating')
-        else:
-            print(f'💰 Passenger confirmed payment for trip {trip_id}, waiting for driver confirmation')
+            print(f'💰 Both confirmed payment for trip {trip_id}, trip completed')
         
         return jsonify({
             'data': {
                 'id': trip_id,
-                'status': 'waiting_for_rating' if (trip_data and trip_data.get('driver_payment_confirmed')) else 'pending_payment',
+                'status': 'completed' if (trip_data and trip_data.get('driver_payment_confirmed')) else 'pending_payment',
                 'message': 'Payment confirmed by passenger'
             }
         }), 200
